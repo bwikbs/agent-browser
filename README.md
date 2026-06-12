@@ -1231,7 +1231,7 @@ agent-browser uses a client-daemon architecture:
 
 The daemon starts automatically on first command and persists between commands for fast subsequent operations. To auto-shutdown the daemon after a period of inactivity, set `AGENT_BROWSER_IDLE_TIMEOUT_MS` (value in milliseconds). When set, the daemon closes the browser and exits after receiving no commands for the specified duration.
 
-**Browser Engine:** Uses Chrome (from Chrome for Testing) by default. The `--engine` flag selects between `chrome`, `lightpanda`, and `starfish`. Supported browsers: Chromium/Chrome (via CDP), the Starfish headless WebView (via its CDP server; locate the binary with `STARFISH_BIN` or `--executable-path`), and Safari (via WebDriver for iOS).
+**Browser Engine:** Uses Chrome (from Chrome for Testing) by default. The `--engine` flag selects between `chrome`, `lightpanda`, and `starfish`. Supported browsers: Chromium/Chrome (via CDP), the Starfish headless WebView (via its CDP server; locate the binary with `STARFISH_BIN` or `--executable-path` — see the [Starfish command support matrix](docs/starfish-engine.md)), and Safari (via WebDriver for iOS).
 
 ## Platforms
 
