@@ -9,6 +9,7 @@ use super::cdp::chrome::{auto_connect_cdp, launch_chrome, ChromeProcess, LaunchO
 use super::cdp::client::CdpClient;
 use super::cdp::discovery::discover_cdp_url;
 use super::cdp::lightpanda::{launch_lightpanda, LightpandaLaunchOptions, LightpandaProcess};
+use super::cdp::starfish::{launch_starfish, StarfishLaunchOptions, StarfishProcess};
 use super::cdp::types::*;
 use super::element::{resolve_element_object_id, RefMap};
 
@@ -84,6 +85,28 @@ fn validate_lightpanda_options(options: &LaunchOptions) -> Result<(), String> {
         return Err(
             "Custom Chrome arguments (--args) are not supported with Lightpanda".to_string(),
         );
+    }
+    Ok(())
+}
+
+/// Validates that Chrome-only options are not used with Starfish.
+fn validate_starfish_options(options: &LaunchOptions) -> Result<(), String> {
+    if options
+        .extensions
+        .as_ref()
+        .map(|e| !e.is_empty())
+        .unwrap_or(false)
+    {
+        return Err("Extensions are not supported with Starfish".to_string());
+    }
+    if options.profile.is_some() {
+        return Err("Profiles are not supported with Starfish".to_string());
+    }
+    if options.storage_state.is_some() {
+        return Err("Storage state is not supported with Starfish".to_string());
+    }
+    if !options.args.is_empty() {
+        return Err("Custom Chrome arguments (--args) are not supported with Starfish".to_string());
     }
     Ok(())
 }
@@ -265,6 +288,7 @@ impl WaitUntil {
 pub enum BrowserProcess {
     Chrome(ChromeProcess),
     Lightpanda(LightpandaProcess),
+    Starfish(StarfishProcess),
 }
 
 impl BrowserProcess {
@@ -272,6 +296,7 @@ impl BrowserProcess {
         match self {
             BrowserProcess::Chrome(p) => p.kill(),
             BrowserProcess::Lightpanda(p) => p.kill(),
+            BrowserProcess::Starfish(p) => p.kill(),
         }
     }
 
@@ -279,6 +304,7 @@ impl BrowserProcess {
         match self {
             BrowserProcess::Chrome(p) => p.wait_or_kill(timeout),
             BrowserProcess::Lightpanda(p) => p.kill(),
+            BrowserProcess::Starfish(p) => p.kill(),
         }
     }
 
@@ -287,6 +313,7 @@ impl BrowserProcess {
         match self {
             BrowserProcess::Chrome(p) => p.has_exited(),
             BrowserProcess::Lightpanda(_) => false,
+            BrowserProcess::Starfish(_) => false,
         }
     }
 }
@@ -305,6 +332,9 @@ pub struct BrowserManager {
     /// Origins visited during this session, used by save_state to collect cross-origin localStorage.
     visited_origins: HashSet<String>,
     next_tab_id: u32,
+    /// Engine driving this session ("chrome", "lightpanda", "starfish"). Drives
+    /// engine-specific workarounds such as Starfish's keep-alive re-injection.
+    engine: String,
 }
 
 const LIGHTPANDA_CDP_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -329,9 +359,12 @@ impl BrowserManager {
             "lightpanda" => {
                 validate_lightpanda_options(&options)?;
             }
+            "starfish" => {
+                validate_starfish_options(&options)?;
+            }
             _ => {
                 return Err(format!(
-                    "Unknown engine '{}'. Supported engines: chrome, lightpanda",
+                    "Unknown engine '{}'. Supported engines: chrome, lightpanda, starfish",
                     engine
                 ));
             }
@@ -352,6 +385,15 @@ impl BrowserManager {
                 let lp = launch_lightpanda(&lp_options).await?;
                 let url = lp.ws_url.clone();
                 (url, BrowserProcess::Lightpanda(lp))
+            }
+            "starfish" => {
+                let sf_options = StarfishLaunchOptions {
+                    executable_path: options.executable_path.clone(),
+                    port: None,
+                };
+                let sf = launch_starfish(&sf_options).await?;
+                let url = sf.ws_url.clone();
+                (url, BrowserProcess::Starfish(sf))
             }
             _ => {
                 let chrome = tokio::task::spawn_blocking(move || launch_chrome(&options))
@@ -377,6 +419,7 @@ impl BrowserManager {
                 ignore_https_errors,
                 visited_origins: HashSet::new(),
                 next_tab_id: 1,
+                engine: engine.to_string(),
             };
             manager.discover_and_attach_targets().await?;
             manager
@@ -466,6 +509,7 @@ impl BrowserManager {
             ignore_https_errors: false,
             visited_origins: HashSet::new(),
             next_tab_id: 1,
+            engine: "chrome".to_string(),
         };
 
         if direct_page {
@@ -675,6 +719,14 @@ impl BrowserManager {
         if nav_result.loader_id.is_some() && wait_until != WaitUntil::None {
             self.wait_for_lifecycle(wait_until, &session_id, &mut lifecycle_rx)
                 .await?;
+        }
+
+        // Starfish's headless shell exits after `onload` if the new document has
+        // no pending timer, and a full navigation drops the launch URL's
+        // keep-alive (Starfish CDP ANALYSIS section 0.4). Re-inject a no-op timer
+        // so subsequent commands still have a live process to talk to.
+        if self.engine == "starfish" && nav_result.loader_id.is_some() {
+            let _ = self.evaluate_simple("setInterval(function(){},300)").await;
         }
 
         let page_url = self.get_url().await.unwrap_or_else(|_| url.to_string());
@@ -1617,6 +1669,7 @@ async fn initialize_lightpanda_manager(
             ignore_https_errors: false,
             visited_origins: HashSet::new(),
             next_tab_id: 1,
+            engine: "lightpanda".to_string(),
         };
 
         match discover_and_attach_lightpanda_targets(&mut manager, deadline).await {
